@@ -6,12 +6,6 @@ list of planned changes and work to be done on the Cowboy
 server. It is intended to be exhaustive but some elements
 might still be missing.
 
-1.0 (R16 and R17)
------------------
-
-We are now in the final push to Cowboy 1.0. Further changes
-are expected to be bug fixes and documentation improvements.
-
 2.0 (R17 and R18)
 -----------------
 
@@ -75,6 +69,11 @@ Similarly, the `rest_terminate` and `websocket_terminate`
 callbacks will be removed in favor of a unified `terminate/3`.
 
 The `terminate/3` callback will become optional.
+
+### Middlewares
+
+The error tuple return value brings little value compared to
+the halt tuple. The error tuple will therefore be removed.
 
 ### Hooks
 

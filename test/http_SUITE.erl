@@ -193,6 +193,7 @@ init_dispatch(Config) ->
 			{"/multipart/large", http_multipart_stream, []},
 			{"/echo/body", http_echo_body, []},
 			{"/echo/body_qs", http_body_qs, []},
+			{"/crash/content-length", input_crash_h, content_length},
 			{"/param_all", rest_param_all, []},
 			{"/bad_accept", rest_simple_resource, []},
 			{"/bad_content_type", rest_patch_resource, []},
@@ -274,6 +275,7 @@ The document has moved
 		{400, "GET / HTTP/1.1\r\nHost: ninenines.eu\r\n\r\n"},
 		{400, "GET http://proxy/ HTTP/1.1\r\n\r\n"},
 		{400, "GET / HTTP/1.1\r\nHost: localhost:bad_port\r\n\r\n"},
+		{400, ["POST /crash/content-length HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5000,5000\r\n\r\n", Huge]},
 		{505, ResponsePacket},
 		{408, "GET / HTTP/1.1\r\n"},
 		{408, "GET / HTTP/1.1\r\nHost: localhost"},
@@ -423,6 +425,34 @@ http10_hostless(Config) ->
 	200 = do_raw("GET /http1.0/hostless HTTP/1.0\r\n\r\n",
 		[{port, Port10}|Config]),
 	cowboy:stop_listener(http10_hostless).
+
+http10_keepalive_default(Config) ->
+	Normal = "GET / HTTP/1.0\r\nhost: localhost\r\n\r\n",
+	Client = raw_open(Config),
+	ok = raw_send(Client, Normal),
+	case catch raw_recv_head(Client) of
+		{'EXIT', _} -> error(closed);
+		_ -> ok
+	end,
+	ok = raw_send(Client, Normal),
+	case catch raw_recv_head(Client) of
+		{'EXIT', _} -> closed;
+		_ -> error(not_closed)
+	end.
+
+http10_keepalive_forced(Config) ->
+	Keepalive = "GET / HTTP/1.0\r\nhost: localhost\r\nConnection: keep-alive\r\n\r\n",
+	Client = raw_open(Config),
+	ok = raw_send(Client, Keepalive),
+	case catch raw_recv_head(Client) of
+		{'EXIT', _} -> error(closed);
+		_ -> ok
+	end,
+	ok = raw_send(Client, Keepalive),
+	case catch raw_recv_head(Client) of
+		{'EXIT', Err} -> error({closed, Err});
+		_ -> ok
+	end.
 
 keepalive_max(Config) ->
 	{ConnPid, MRef} = gun_monitor_open(Config),

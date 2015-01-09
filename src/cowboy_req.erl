@@ -56,6 +56,7 @@
 
 %% Multipart API.
 -export([part/1]).
+-export([part/2]).
 -export([part_body/1]).
 -export([part_body/2]).
 
@@ -89,16 +90,6 @@
 -export([compact/1]).
 -export([lock/1]).
 -export([to_list/1]).
-
-%% Deprecated API.
--export([init_stream/4]).
--deprecated({init_stream, 4}).
--export([stream_body/1]).
--deprecated({stream_body, 1}).
--export([stream_body/2]).
--deprecated({stream_body, 2}).
--export([skip_body/1]).
--deprecated({skip_body, 1}).
 
 -type cookie_opts() :: cow_cookie:cookie_opts().
 -export_type([cookie_opts/0]).
@@ -141,7 +132,7 @@
 	qs_vals = undefined :: undefined | list({binary(), binary() | true}),
 	bindings = undefined :: undefined | cowboy_router:bindings(),
 	headers = [] :: cowboy:http_headers(),
-	p_headers = [] :: [any()], %% @todo Improve those specs.
+	p_headers = [] :: [any()],
 	cookies = undefined :: undefined | [{binary(), binary()}],
 	meta = [] :: [{atom(), any()}],
 
@@ -184,13 +175,16 @@ new(Socket, Transport, Peer, Method, Path, Query,
 		method=Method, path=Path, qs=Query, version=Version,
 		headers=Headers, host=Host, port=Port, buffer=Buffer,
 		resp_compress=Compress, onresponse=OnResponse},
-	case CanKeepalive and (Version =:= 'HTTP/1.1') of
+	case CanKeepalive of
 		false ->
 			Req#http_req{connection=close};
 		true ->
 			case lists:keyfind(<<"connection">>, 1, Headers) of
 				false ->
-					Req; %% keepalive
+					case Version of
+						'HTTP/1.1' -> Req; %% keepalive
+						'HTTP/1.0' -> Req#http_req{connection=close}
+					end;
 				{_, ConnectionHeader} ->
 					Tokens = cow_http_hd:parse_connection(ConnectionHeader),
 					Connection = connection_to_atom(Tokens),
@@ -276,7 +270,7 @@ host_url(Req=#http_req{transport=Transport, host=Host, port=Port}) ->
 	PortBin = case {TransportName, Port} of
 		{ssl, 443} -> <<>>;
 		{tcp, 80} -> <<>>;
-		_ -> << ":", (list_to_binary(integer_to_list(Port)))/binary >>
+		_ -> << ":", (integer_to_binary(Port))/binary >>
 	end,
 	{<< "http", Secure/binary, "://", Host/binary, PortBin/binary >>, Req}.
 
@@ -507,9 +501,6 @@ body(Req) ->
 -spec body(Req, body_opts())
 	-> {ok, binary(), Req} | {more, binary(), Req}
 	| {error, atom()} when Req::req().
-%% @todo This clause is kept for compatibility reasons, to be removed in 1.0.
-body(MaxBodyLength, Req) when is_integer(MaxBodyLength) ->
-	body(Req, [{length, MaxBodyLength}]);
 body(Req=#http_req{body_state=waiting}, Opts) ->
 	%% Send a 100 continue if needed (enabled by default).
 	Req1 = case lists:keyfind(continue, 1, Opts) of
@@ -634,7 +625,7 @@ body_decode(Req=#http_req{buffer=Data, body_state={stream, _,
 body_decode_end(Req=#http_req{headers=Headers, p_headers=PHeaders},
 		TotalLength, Rest) ->
 	Headers2 = lists:keystore(<<"content-length">>, 1, Headers,
-		{<<"content-length">>, list_to_binary(integer_to_list(TotalLength))}),
+		{<<"content-length">>, integer_to_binary(TotalLength)}),
 	%% At this point we just assume TEs were all decoded.
 	Headers3 = lists:keydelete(<<"transfer-encoding">>, 1, Headers2),
 	PHeaders2 = lists:keystore(<<"content-length">>, 1, PHeaders,
@@ -654,9 +645,6 @@ body_qs(Req) ->
 
 -spec body_qs(Req, body_opts()) -> {ok, [{binary(), binary() | true}], Req}
 	| {badlength, Req} | {error, atom()} when Req::req().
-%% @todo This clause is kept for compatibility reasons, to be removed in 1.0.
-body_qs(MaxBodyLength, Req) when is_integer(MaxBodyLength) ->
-	body_qs(Req, [{length, MaxBodyLength}]);
 body_qs(Req, Opts) ->
 	case body(Req, Opts) of
 		{ok, Body, Req2} ->
@@ -665,42 +653,6 @@ body_qs(Req, Opts) ->
 			{badlength, Req2};
 		{error, Reason} ->
 			{error, Reason}
-	end.
-
-%% Deprecated body API.
-%% @todo The following 4 functions will be removed in Cowboy 1.0.
-
--spec init_stream(transfer_decode_fun(), any(), content_decode_fun(), Req)
-	-> {ok, Req} when Req::req().
-init_stream(TransferDecode, TransferState, ContentDecode, Req) ->
-	{ok, Req#http_req{body_state=
-		{stream, 0, TransferDecode, TransferState, ContentDecode}}}.
-
--spec stream_body(Req) -> {ok, binary(), Req}
-	| {done, Req} | {error, atom()} when Req::req().
-stream_body(Req) ->
-	stream_body(1000000, Req).
-
--spec stream_body(non_neg_integer(), Req) -> {ok, binary(), Req}
-	| {done, Req} | {error, atom()} when Req::req().
-stream_body(ChunkLength, Req) ->
-	case body(Req, [{length, ChunkLength}]) of
-		{ok, <<>>, Req2} ->
-			{done, Req2};
-		{ok, Data, Req2} ->
-			{ok, Data, Req2};
-		{more, Data, Req2} ->
-			{ok, Data, Req2};
-		Error = {error, _} ->
-			Error
-	end.
-
--spec skip_body(Req) -> {ok, Req} | {error, atom()} when Req::req().
-skip_body(Req) ->
-	case stream_body(Req) of
-		{ok, _, Req2} -> skip_body(Req2);
-		{done, Req2} -> {ok, Req2};
-		{error, Reason} -> {error, Reason}
 	end.
 
 %% Multipart API.
@@ -1036,14 +988,21 @@ continue(#http_req{socket=Socket, transport=Transport,
 		<< HTTPVer/binary, " ", (status(100))/binary, "\r\n\r\n" >>).
 
 %% Meant to be used internally for sending errors after crashes.
--spec maybe_reply(cowboy:http_status(), req()) -> ok.
-maybe_reply(Status, Req) ->
+-spec maybe_reply([{module(), atom(), arity() | [term()], _}], req()) -> ok.
+maybe_reply(Stacktrace, Req) ->
 	receive
 		{cowboy_req, resp_sent} -> ok
 	after 0 ->
-		_ = cowboy_req:reply(Status, Req),
+		_ = do_maybe_reply(Stacktrace, Req),
 		ok
 	end.
+
+do_maybe_reply([
+		{cow_http_hd, _, _, _},
+		{cowboy_req, parse_header, _, _}|_], Req) ->
+	cowboy_req:reply(400, Req);
+do_maybe_reply(_, Req) ->
+	cowboy_req:reply(500, Req).
 
 -spec ensure_response(req(), cowboy:http_status()) -> ok.
 %% The response has already been fully sent to the client.

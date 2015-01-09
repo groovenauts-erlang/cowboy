@@ -17,10 +17,6 @@
 -module(cowboy_websocket).
 -behaviour(cowboy_sub_protocol).
 
-%% Ignore the deprecation warning for crypto:sha/1.
-%% @todo Remove when we support only R16B+.
--compile(nowarn_deprecated_function).
-
 -export([upgrade/4]).
 -export([handler_loop/4]).
 
@@ -71,8 +67,12 @@ upgrade(Req, Env, Handler, HandlerOpts) ->
 		{ok, State2, Req2} ->
 			handler_init(State2, Req2, HandlerOpts)
 	catch _:_ ->
-		cowboy_req:maybe_reply(400, Req),
-		exit(normal)
+		receive
+			{cowboy_req, resp_sent} -> ok
+		after 0 ->
+			_ = cowboy_req:reply(400, Req),
+			exit(normal)
+		end
 	end.
 
 -spec websocket_upgrade(#state{}, Req)
@@ -144,11 +144,12 @@ handler_init(State=#state{env=Env, transport=Transport,
 			cowboy_req:ensure_response(Req2, 400),
 			{ok, Req2, [{result, closed}|Env]}
 	catch Class:Reason ->
-		cowboy_req:maybe_reply(400, Req),
+		Stacktrace = erlang:get_stacktrace(),
+		cowboy_req:maybe_reply(Stacktrace, Req),
 		erlang:Class([
 			{reason, Reason},
 			{mfa, {Handler, websocket_init, 3}},
-			{stacktrace, erlang:get_stacktrace()},
+			{stacktrace, Stacktrace},
 			{req, cowboy_req:to_list(Req)},
 			{opts, HandlerOpts}
 		])
@@ -161,8 +162,7 @@ handler_init(State=#state{env=Env, transport=Transport,
 websocket_handshake(State=#state{
 			transport=Transport, key=Key, deflate_frame=DeflateFrame},
 		Req, HandlerState) ->
-	%% @todo Change into crypto:hash/2 for R17B+ or when supporting only R16B+.
-	Challenge = base64:encode(crypto:sha(
+	Challenge = base64:encode(crypto:hash(sha,
 		<< Key/binary, "258EAFA5-E914-47DA-95CA-C5AB0DC85B11" >>)),
 	Extensions = case DeflateFrame of
 		false -> [];
